@@ -1,0 +1,33 @@
+name: build-windows
+
+# Livraison Windows : tout push sur liv-win produit k8lens.exe
+on:
+  push:
+    branches: [liv-win]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérification syntaxe bash
+        run: bash -n k8lens.sh && bash -n k8lens-renew.sh
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build k8lens.exe (windows/amd64)
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags "-s -w" -o dist/k8lens.exe .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: k8lens-windows-amd64
+          path: dist/k8lens.exe
+          if-no-files-found: error

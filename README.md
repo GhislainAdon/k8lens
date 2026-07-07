@@ -11,9 +11,17 @@ Dérivé du script `cloud-ictneo/script.sh` (migration MicroK8s → kubeadm), g�
 - **cron de renouvellement** du token de join (expire après 24h) — un worker peut rejoindre le cluster à tout moment
 - export automatique d'un **kubeconfig prêt pour Freelens**
 
+> **Répartition des rôles** : la *création* des nœuds (master/workers) est faite par
+> `k8lens.sh` en SSH — Freelens ne crée pas de nœuds. Freelens sert au **pilotage**
+> du cluster une fois créé : vue nodes/pods/deployments, logs, shell dans les pods,
+> métriques, édition des ressources, drain/cordon des nœuds, etc.
+
 ## Prérequis
 
-- Accès **SSH par clé** aux serveurs cibles (entrées `~/.ssh/config` ou `user@ip`)
+- **Accès SSH passwordless** (par clé) depuis la machine d'installation vers le master
+  **et** tous les workers — vérifié automatiquement au démarrage (préflight), le script
+  s'arrête avec un message clair si une cible demande un mot de passe
+  (`ssh-copy-id user@cible` pour déployer la clé)
 - `sudo` sur les cibles (NOPASSWD recommandé pour un déroulé sans interruption)
 - Cibles : Ubuntu 22.04+/Debian 12+, ou Rocky/CentOS Stream/AlmaLinux 9+ (EPEL disponible)
 - Sur le poste : bash (Git Bash / WSL sous Windows), `ssh`, `scp`
@@ -108,9 +116,34 @@ Ajouter un worker plus tard = préparer le nœud (relancer `k8lens.sh` avec le n
 ssh master "sudo cat /var/lib/k8lens/join-command" | ssh nouveau-worker "sudo bash"
 ```
 
+## CI — binaires de livraison
+
+Deux branches de livraison déclenchent un build GitHub Actions :
+
+| Branche | Workflow | Artefact produit |
+|---|---|---|
+| `liv-win` | `build-windows` | `k8lens.exe` (windows/amd64) |
+| `liv-lin` | `build-linux` | `k8lens` (linux/amd64) |
+
+```bash
+git push github main:liv-win   # déclenche le build Windows
+git push github main:liv-lin   # déclenche le build Linux
+```
+
+L'artefact se télécharge depuis l'onglet **Actions** du repo (ou `gh run download`).
+Le binaire embarque `k8lens.sh` + `k8lens-renew.sh` (go:embed) et délègue à bash :
+natif sur Linux ; **Git Bash ou WSL requis sur Windows** (ssh/scp aussi). Mêmes
+options que le script :
+
+```bash
+k8lens.exe --master 10.0.0.10 --worker 10.0.0.11 --install-cron
+```
+
 ## Fichiers
 
 | Fichier | Rôle |
 |---|---|
 | `k8lens.sh` | Script principal (création/extension du cluster, export kubeconfig) |
 | `k8lens-renew.sh` | Renouvellement du token — déployé sur le master, lancé par cron |
+| `main.go` | Wrapper Go : binaire autonome embarquant les 2 scripts |
+| `.github/workflows/build-{win,lin}.yml` | Pipelines de livraison `liv-win` / `liv-lin` |

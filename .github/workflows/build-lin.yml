@@ -1,0 +1,36 @@
+name: build-linux
+
+# Livraison Linux : tout push sur liv-lin produit le binaire k8lens
+on:
+  push:
+    branches: [liv-lin]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérification syntaxe bash
+        run: bash -n k8lens.sh && bash -n k8lens-renew.sh
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build k8lens (linux/amd64)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags "-s -w" -o dist/k8lens .
+
+      - name: Test de fumée (--help)
+        run: ./dist/k8lens --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: k8lens-linux-amd64
+          path: dist/k8lens
+          if-no-files-found: error

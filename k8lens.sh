@@ -350,6 +350,22 @@ join_node_to_cluster() {
 # Déroulé principal
 # ===========================================================================
 
+# 0. Préflight : la machine d'installation doit avoir un accès SSH
+#    passwordless (clé) vers le master et tous les workers.
+echo "0. Préflight : accès SSH passwordless vers les cibles..."
+for server in "${ALL_NODES[@]}"; do
+    [ -z "$server" ] && continue
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$(ssh_target "$server")" true 2>/dev/null; then
+        echo "ERREUR : pas d'accès SSH passwordless à $server." >&2
+        echo "         Déployer la clé d'abord : ssh-copy-id $(ssh_target "$server")" >&2
+        exit 1
+    fi
+    if ! ssh -o BatchMode=yes "$(ssh_target "$server")" "sudo -n true" 2>/dev/null; then
+        echo "ATTENTION : sudo demandera un mot de passe sur $server (NOPASSWD recommandé)" >&2
+    fi
+    echo "  $server : SSH OK"
+done
+
 # 1. Détection de l'OS de chaque nœud
 echo "1. Détection de l'OS des cibles..."
 declare -A NODE_OS
