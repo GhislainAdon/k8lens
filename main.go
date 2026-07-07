@@ -10,26 +10,61 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 //go:embed k8lens.sh k8lens-renew.sh
 var scripts embed.FS
 
+// findBash localise bash. Sous Windows on veut le bash de Git Bash (livré avec
+// ssh/scp) et JAMAIS C:\Windows\System32\bash.exe qui est le lanceur WSL — il
+// échoue avec « execvpe(/bin/bash) failed » quand aucune distribution WSL
+// n'est installée.
 func findBash() (string, error) {
-	if p, err := exec.LookPath("bash"); err == nil {
-		return p, nil
+	if runtime.GOOS != "windows" {
+		if p, err := exec.LookPath("bash"); err == nil {
+			return p, nil
+		}
+		return "", fmt.Errorf("bash introuvable")
 	}
-	if runtime.GOOS == "windows" {
-		for _, c := range []string{
-			`C:\Program Files\Git\bin\bash.exe`,
-			`C:\Program Files (x86)\Git\bin\bash.exe`,
-		} {
-			if _, err := os.Stat(c); err == nil {
-				return c, nil
+
+	// 1. Déduire l'installation Git Bash depuis git.exe
+	//    (layouts : <Git>\cmd\git.exe, <Git>\bin\git.exe, <Git>\mingw64\bin\git.exe)
+	if git, err := exec.LookPath("git.exe"); err == nil {
+		dir := filepath.Dir(git)
+		for i := 0; i < 3; i++ {
+			for _, rel := range []string{`bin\bash.exe`, `usr\bin\bash.exe`} {
+				p := filepath.Join(dir, rel)
+				if _, err := os.Stat(p); err == nil {
+					return p, nil
+				}
 			}
+			dir = filepath.Dir(dir)
 		}
 	}
-	return "", fmt.Errorf("bash introuvable — installer Git Bash (winget install Git.Git) ou WSL")
+
+	// 2. Emplacements d'installation connus de Git pour Windows
+	home, _ := os.UserHomeDir()
+	for _, c := range []string{
+		`C:\Program Files\Git\bin\bash.exe`,
+		`C:\Program Files (x86)\Git\bin\bash.exe`,
+		filepath.Join(os.Getenv("LOCALAPPDATA"), `Programs\Git\bin\bash.exe`),
+		filepath.Join(home, `scoop\apps\git\current\bin\bash.exe`),
+	} {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+
+	// 3. Dernier recours : le PATH, en excluant le bash WSL
+	if p, err := exec.LookPath("bash.exe"); err == nil {
+		low := strings.ToLower(p)
+		if !strings.Contains(low, `\system32\`) && !strings.Contains(low, `\windowsapps\`) {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf("Git Bash introuvable — installer Git pour Windows : winget install Git.Git")
 }
 
 func main() {
