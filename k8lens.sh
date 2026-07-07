@@ -475,6 +475,7 @@ ssh "$(ssh_target "$MASTER")" "sudo cat /etc/kubernetes/admin.conf" \
     | sed "s|server: https://.*:6443|server: https://$MASTER_IP:6443|" \
     | sed "s/kubernetes-admin@kubernetes/$CLUSTER_NAME/" \
     | sed "s/name: kubernetes\$/name: $CLUSTER_NAME/" \
+    | sed "s/cluster: kubernetes\$/cluster: $CLUSTER_NAME/" \
     > "$EXPORT_KUBECONFIG"
 chmod 600 "$EXPORT_KUBECONFIG"
 

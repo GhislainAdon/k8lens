@@ -138,9 +138,16 @@ plus un test de fumée du `.exe` si lancé depuis Git Bash :
 ```
 
 L'artefact se télécharge depuis l'onglet **Actions** du repo (ou `gh run download`).
-Le binaire embarque `k8lens.sh` + `k8lens-renew.sh` (go:embed) et délègue à bash :
-natif sur Linux ; **Git Bash ou WSL requis sur Windows** (ssh/scp aussi). Mêmes
-options que le script :
+
+Le binaire est **100 % natif** (Go) : client SSH intégré (`golang.org/x/crypto/ssh`),
+**aucune dépendance à Git Bash, WSL, ssh.exe ou scp**. Il supporte :
+
+- les clés `~/.ssh/id_ed25519`, `id_rsa`, `id_ecdsa` et l'**agent SSH**
+  (OpenSSH Windows via named pipe inclus)
+- les **alias de `~/.ssh/config`** (HostName, User, Port, IdentityFile)
+- `known_hosts` en mode *accept-new* (hôte inconnu ajouté, clé changée = erreur)
+
+Mêmes options que le script bash :
 
 ```bash
 k8lens.exe --master 10.0.0.10 --worker 10.0.0.11 --install-cron
@@ -150,7 +157,8 @@ k8lens.exe --master 10.0.0.10 --worker 10.0.0.11 --install-cron
 
 | Fichier | Rôle |
 |---|---|
-| `k8lens.sh` | Script principal (création/extension du cluster, export kubeconfig) |
+| `main.go` / `ssh.go` / `steps.go` | CLI native Go : SSH intégré, provisioning complet |
+| `k8lens.sh` | Version script bash (alternative autonome, mêmes options) |
 | `k8lens-renew.sh` | Renouvellement du token — déployé sur le master, lancé par cron |
-| `main.go` | Wrapper Go : binaire autonome embarquant les 2 scripts |
+| `build-local.sh` | Build Docker local (vet + linux + windows) sans consommer la CI |
 | `.github/workflows/build-{win,lin}.yml` | Pipelines de livraison `liv-win` / `liv-lin` |

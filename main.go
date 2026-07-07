@@ -1,108 +1,168 @@
-// k8lens — binaire autonome qui embarque k8lens.sh et k8lens-renew.sh.
-// Il extrait les scripts dans un répertoire temporaire puis délègue à bash
-// (natif sur Linux ; Git Bash ou WSL sur Windows — ssh/scp restent requis).
+// k8lens — CLI native (aucune dépendance bash/WSL) qui crée un cluster
+// Kubernetes kubeadm mono-nœud ou 1 master + N workers via SSH, puis exporte
+// un kubeconfig prêt à importer dans Freelens.
+//
+// Équivalent Go du script k8lens.sh (conservé dans le repo comme alternative).
 package main
 
 import (
-	"embed"
+	"bufio"
+	_ "embed"
+	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
-//go:embed k8lens.sh k8lens-renew.sh
-var scripts embed.FS
+//go:embed k8lens-renew.sh
+var renewScript []byte
 
-// findBash localise bash. Sous Windows on veut le bash de Git Bash (livré avec
-// ssh/scp) et JAMAIS C:\Windows\System32\bash.exe qui est le lanceur WSL — il
-// échoue avec « execvpe(/bin/bash) failed » quand aucune distribution WSL
-// n'est installée.
-func findBash() (string, error) {
-	if runtime.GOOS != "windows" {
-		if p, err := exec.LookPath("bash"); err == nil {
-			return p, nil
-		}
-		return "", fmt.Errorf("bash introuvable")
-	}
+const version = "0.2.0"
 
-	// 1. Déduire l'installation Git Bash depuis git.exe
-	//    (layouts : <Git>\cmd\git.exe, <Git>\bin\git.exe, <Git>\mingw64\bin\git.exe)
-	if git, err := exec.LookPath("git.exe"); err == nil {
-		dir := filepath.Dir(git)
-		for i := 0; i < 3; i++ {
-			for _, rel := range []string{`bin\bash.exe`, `usr\bin\bash.exe`} {
-				p := filepath.Join(dir, rel)
-				if _, err := os.Stat(p); err == nil {
-					return p, nil
-				}
-			}
-			dir = filepath.Dir(dir)
-		}
-	}
+type stringSlice []string
 
-	// 2. Emplacements d'installation connus de Git pour Windows
-	home, _ := os.UserHomeDir()
-	for _, c := range []string{
-		`C:\Program Files\Git\bin\bash.exe`,
-		`C:\Program Files (x86)\Git\bin\bash.exe`,
-		filepath.Join(os.Getenv("LOCALAPPDATA"), `Programs\Git\bin\bash.exe`),
-		filepath.Join(home, `scoop\apps\git\current\bin\bash.exe`),
-	} {
-		if _, err := os.Stat(c); err == nil {
-			return c, nil
-		}
-	}
+func (s *stringSlice) String() string     { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 
-	// 3. Dernier recours : le PATH, en excluant le bash WSL
-	if p, err := exec.LookPath("bash.exe"); err == nil {
-		low := strings.ToLower(p)
-		if !strings.Contains(low, `\system32\`) && !strings.Contains(low, `\windowsapps\`) {
-			return p, nil
-		}
-	}
+func fatalf(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, "ERREUR : "+format+"\n", a...)
+	os.Exit(1)
+}
 
-	return "", fmt.Errorf("Git Bash introuvable — installer Git pour Windows : winget install Git.Git")
+func usage() {
+	fmt.Fprint(os.Stdout, `k8lens — cluster Kubernetes kubeadm (mono ou 1 master + N workers) + pilotage Freelens
+
+Usage : k8lens [options]
+
+Options :
+  --master HOTE            Hôte du control-plane (obligatoire, ou demandé en console)
+  --worker HOTE            Hôte worker (répétable : --worker w1 --worker w2 ...)
+  --single                 Cluster mono-nœud (master seul, taint control-plane retiré)
+  --k8s-version X.Y        Version Kubernetes (défaut : 1.34)
+  --calico-version vX.Y.Z  Version Calico (défaut : v3.27.0)
+  --pod-cidr CIDR          CIDR des pods (défaut : 192.168.0.0/16)
+  --ssh-user USER          Utilisateur SSH sur les cibles (défaut : ~/.ssh/config puis utilisateur courant)
+  --cluster-name NOM       Nom du contexte dans le kubeconfig exporté (défaut : k8lens)
+  --export-kubeconfig F    Chemin local du kubeconfig exporté (défaut : ~/.kube/<cluster-name>.kubeconfig)
+  --install-cron           Installe le cron de renouvellement du token de join sur le master
+  --with-addons            Installe helm + local-path-provisioner + ingress-nginx
+  --version                Affiche la version
+  -h, --help               Cette aide
+
+Prérequis : accès SSH passwordless (clé ~/.ssh/id_* ou agent SSH) vers les cibles,
+sudo NOPASSWD recommandé. Les alias de ~/.ssh/config sont supportés.
+`)
 }
 
 func main() {
-	dir, err := os.MkdirTemp("", "k8lens-*")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "k8lens:", err)
-		os.Exit(1)
-	}
-	defer os.RemoveAll(dir)
+	var (
+		master, sshUser, podCIDR, kubeVersion, calicoVersion, clusterName, exportPath string
+		workers                                                                      stringSlice
+		single, installCron, withAddons, showVersion                                 bool
+	)
+	flag.StringVar(&master, "master", "", "")
+	flag.Var(&workers, "worker", "")
+	flag.BoolVar(&single, "single", false, "")
+	flag.StringVar(&kubeVersion, "k8s-version", "1.34", "")
+	flag.StringVar(&calicoVersion, "calico-version", "v3.27.0", "")
+	flag.StringVar(&podCIDR, "pod-cidr", "192.168.0.0/16", "")
+	flag.StringVar(&sshUser, "ssh-user", "", "")
+	flag.StringVar(&clusterName, "cluster-name", "k8lens", "")
+	flag.StringVar(&exportPath, "export-kubeconfig", "", "")
+	flag.BoolVar(&installCron, "install-cron", false, "")
+	flag.BoolVar(&withAddons, "with-addons", false, "")
+	flag.BoolVar(&showVersion, "version", false, "")
+	flag.Usage = usage
+	flag.Parse()
 
-	for _, name := range []string{"k8lens.sh", "k8lens-renew.sh"} {
-		data, err := scripts.ReadFile(name)
+	if showVersion {
+		fmt.Println("k8lens", version)
+		return
+	}
+
+	// Saisie interactive si le master n'est pas fourni
+	stdin := bufio.NewReader(os.Stdin)
+	if master == "" {
+		fmt.Print("Hôte du master (IP ou nom SSH) : ")
+		line, _ := stdin.ReadString('\n')
+		master = strings.TrimSpace(line)
+		if master == "" {
+			fatalf("master obligatoire")
+		}
+		if !single && len(workers) == 0 {
+			fmt.Print("Workers (séparés par des espaces, vide = mono-nœud) : ")
+			line, _ = stdin.ReadString('\n')
+			workers = strings.Fields(line)
+			if len(workers) == 0 {
+				single = true
+			}
+		}
+	}
+	if single && len(workers) > 0 {
+		fatalf("--single est incompatible avec --worker")
+	}
+
+	if exportPath == "" {
+		home, err := os.UserHomeDir()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "k8lens:", err)
-			os.Exit(1)
+			fatalf("répertoire home introuvable : %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0o755); err != nil {
-			fmt.Fprintln(os.Stderr, "k8lens:", err)
-			os.Exit(1)
-		}
+		exportPath = filepath.Join(home, ".kube", clusterName+".kubeconfig")
 	}
 
-	bash, err := findBash()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "k8lens:", err)
-		os.Exit(1)
+	c := &Cluster{
+		r:             NewRunner(sshUser),
+		master:        master,
+		workers:       workers,
+		single:        single,
+		kubeVersion:   kubeVersion,
+		calicoVersion: calicoVersion,
+		podCIDR:       podCIDR,
+		clusterName:   clusterName,
+		exportPath:    exportPath,
+		osType:        map[string]string{},
+		ip:            map[string]string{},
+	}
+	c.nodes = append([]string{master}, workers...)
+
+	fmt.Printf("=== k8lens %s : cluster Kubernetes v%s ===\n", version, kubeVersion)
+	fmt.Println("Master  :", master)
+	if single {
+		fmt.Println("Mode    : mono-nœud")
+	} else {
+		fmt.Println("Workers :", strings.Join(workers, " "))
 	}
 
-	args := append([]string{filepath.Join(dir, "k8lens.sh")}, os.Args[1:]...)
-	cmd := exec.Command(bash, args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			os.Exit(ee.ExitCode())
-		}
-		fmt.Fprintln(os.Stderr, "k8lens:", err)
-		os.Exit(1)
+	c.Preflight()
+	c.DetectOS()
+	workingNode := c.FindWorkingNode()
+	c.FirewallMesh()
+	c.PrepareAll(workingNode)
+	workingNode = c.InitIfNeeded(workingNode)
+	c.Calico(workingNode)
+	if single {
+		c.Untaint(workingNode)
 	}
+	if len(workers) > 0 {
+		c.JoinWorkers(workingNode)
+	}
+	if withAddons {
+		c.Addons(workingNode)
+	}
+	if installCron {
+		c.InstallCron()
+	}
+	c.ExportKubeconfig()
+
+	fmt.Println("")
+	fmt.Println("=== CLUSTER OPÉRATIONNEL ===")
+	_ = c.r.Run(workingNode, "kubectl get nodes -o wide")
+	fmt.Println("")
+	fmt.Println("Kubeconfig exporté :", exportPath)
+	fmt.Println("")
+	fmt.Println("Pilotage avec Freelens (https://github.com/freelensapp/freelens) :")
+	fmt.Println("  1. Ouvrir Freelens")
+	fmt.Println("  2. Catalog → Clusters → + → 'Sync kubeconfig file(s)'")
+	fmt.Println("  3. Sélectionner :", exportPath)
 }

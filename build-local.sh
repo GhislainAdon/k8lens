@@ -13,12 +13,13 @@ echo "=== Vérification syntaxe bash ==="
 bash -n k8lens.sh
 bash -n k8lens-renew.sh
 
-echo "=== Build Docker (golang:1.24, linux + windows) ==="
+echo "=== Build Docker (golang:1.25, linux + windows) ==="
 # MSYS_NO_PATHCONV : empêche Git Bash de réécrire les chemins /src
 MSYS_NO_PATHCONV=1 docker run --rm \
     -v "$(pwd -W 2>/dev/null || pwd):/src" -w /src -e CGO_ENABLED=0 \
-    golang:1.24 bash -c "
+    golang:1.25 bash -c "
 set -e
+go vet ./...
 GOOS=linux  GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o dist/k8lens .
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o dist/k8lens.exe .
 echo '--- test de fumée linux ---'
