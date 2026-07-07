@@ -130,6 +130,13 @@ git push github main:liv-win   # déclenche le build Windows
 git push github main:liv-lin   # déclenche le build Linux
 ```
 
+**Build local d'abord** (Docker, zéro crédit CI consommé) — même compilation que la CI,
+plus un test de fumée du `.exe` si lancé depuis Git Bash :
+
+```bash
+./build-local.sh      # → dist/k8lens + dist/k8lens.exe
+```
+
 L'artefact se télécharge depuis l'onglet **Actions** du repo (ou `gh run download`).
 Le binaire embarque `k8lens.sh` + `k8lens-renew.sh` (go:embed) et délègue à bash :
 natif sur Linux ; **Git Bash ou WSL requis sur Windows** (ssh/scp aussi). Mêmes
