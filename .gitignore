@@ -1,5 +1,19 @@
+# build output
 dist/
+bin/
+*.exe
+
+# credentials / cluster access - never commit
 *.kubeconfig
 kubeconfig*
 .env
+.env.*
+*.pem
+*.key
+
+# logs and junk
 *.log
+linkedin_post*.txt
+.DS_Store
+.idea/
+.vscode/
