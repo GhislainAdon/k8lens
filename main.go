@@ -31,7 +31,7 @@ func fatalf(format string, a ...any) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stdout, `k8lens — cluster Kubernetes kubeadm (mono ou 1 master + N workers) + pilotage Freelens
+	_, _ = fmt.Fprint(os.Stdout, `k8lens — cluster Kubernetes kubeadm (mono ou 1 master + N workers) + pilotage Freelens
 
 Usage : k8lens [options]
 
@@ -58,8 +58,8 @@ sudo NOPASSWD recommandé. Les alias de ~/.ssh/config sont supportés.
 func main() {
 	var (
 		master, sshUser, podCIDR, kubeVersion, calicoVersion, clusterName, exportPath string
-		workers                                                                      stringSlice
-		single, installCron, withAddons, showVersion                                 bool
+		workers                                                                       stringSlice
+		single, installCron, withAddons, showVersion                                  bool
 	)
 	flag.StringVar(&master, "master", "", "")
 	flag.Var(&workers, "worker", "")

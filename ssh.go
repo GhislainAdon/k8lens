@@ -130,7 +130,7 @@ func hostKeyCallback() ssh.HostKeyCallback {
 			if ferr != nil {
 				return err
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			_, _ = fmt.Fprintln(f, knownhosts.Line([]string{knownhosts.Normalize(hostname)}, key))
 			return nil
 		}
@@ -178,7 +178,7 @@ func (r *Runner) run(host, cmd string, stream bool, stdin io.Reader) (string, er
 	if err != nil {
 		return "", err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	var buf bytes.Buffer
 	if stream {
 		sess.Stdout = io.MultiWriter(os.Stdout, &buf)
