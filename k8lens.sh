@@ -337,6 +337,7 @@ join_node_to_cluster() {
     fi
 
     echo "Ajout de $node au cluster..."
+    # shellcheck disable=SC2029 # JOIN_TOKEN is intentionally expanded client-side
     ssh "$(ssh_target "$node")" "export JOIN_CMD='$JOIN_TOKEN' && sudo bash -c \"\$JOIN_CMD\""
 
     # kubectl sur le nœud (copie de la config du master)
@@ -400,9 +401,7 @@ MASTER_IP=$(get_server_ip "$MASTER")
 
 if [ -n "$WORKING_NODE" ]; then
     echo "Cluster existant détecté sur $WORKING_NODE — pas d'init"
-    SKIP_INIT=true
 else
-    SKIP_INIT=false
     run_remote "$MASTER" "sudo fuser -k 6443/tcp 2>/dev/null || echo 'Port 6443 libre'"
     sleep 2
     echo "IP du master pour controlPlaneEndpoint : $MASTER_IP"
