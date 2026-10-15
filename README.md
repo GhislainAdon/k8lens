@@ -1,164 +1,148 @@
 # k8lens
 
-Création d'un cluster Kubernetes **kubeadm** — mono-nœud ou **1 master + N workers** —
-entièrement paramétrable depuis la console, puis pilotage avec
-**[Freelens](https://github.com/freelensapp/freelens)**.
+[![CI](https://github.com/GhislainAdon/k8lens/actions/workflows/ci.yml/badge.svg)](https://github.com/GhislainAdon/k8lens/actions/workflows/ci.yml)
+![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)
+![Bash](https://img.shields.io/badge/Bash-script-4EAA25?logo=gnubash&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/kubeadm-1.34-326CE5?logo=kubernetes&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Dérivé du script `cloud-ictneo/script.sh` (migration MicroK8s → kubeadm), généralisé :
+> **Idempotent kubeadm bootstrapper.** One command builds a single-node or **1 control-plane + N workers** Kubernetes cluster over SSH (Ubuntu/Debian and Rocky/CentOS/AlmaLinux), then exports a kubeconfig ready for **[Freelens](https://github.com/freelensapp/freelens)**. Ships as a Bash script **and** a native Go binary (Windows/Linux) with a built-in SSH client: no WSL, Git Bash, `ssh.exe` or `scp` needed.
 
-- plus aucune variable codée en dur : cibles, version K8s, CIDR, utilisateur SSH → **arguments CLI** (ou saisie interactive)
-- support **Ubuntu/Debian** (apt + ufw) **et** **Rocky / CentOS / AlmaLinux** (dnf + EPEL + firewalld + SELinux permissif)
-- **cron de renouvellement** du token de join (expire après 24h) — un worker peut rejoindre le cluster à tout moment
-- export automatique d'un **kubeconfig prêt pour Freelens**
+[Résumé en français](#résumé-en-français) · [Documentation complète en français](docs/README.fr.md)
 
-> **Répartition des rôles** : la *création* des nœuds (master/workers) est faite par
-> `k8lens.sh` en SSH — Freelens ne crée pas de nœuds. Freelens sert au **pilotage**
-> du cluster une fois créé : vue nodes/pods/deployments, logs, shell dans les pods,
-> métriques, édition des ressources, drain/cordon des nœuds, etc.
+---
 
-## Prérequis
+## The problem
 
-- **Accès SSH passwordless** (par clé) depuis la machine d'installation vers le master
-  **et** tous les workers — vérifié automatiquement au démarrage (préflight), le script
-  s'arrête avec un message clair si une cible demande un mot de passe
-  (`ssh-copy-id user@cible` pour déployer la clé)
-- `sudo` sur les cibles (NOPASSWD recommandé pour un déroulé sans interruption)
-- Cibles : Ubuntu 22.04+/Debian 12+, ou Rocky/CentOS Stream/AlmaLinux 9+ (EPEL disponible)
-- Sur le poste : bash (Git Bash / WSL sous Windows), `ssh`, `scp`
+Standing up a "real" kubeadm cluster on a few VMs or bare-metal boxes (homelab, training, PoC, edge) is a long checklist: containerd with systemd cgroups, swap, kernel modules, sysctl, versioned `pkgs.k8s.io` repos per distro, firewall rules, `kubeadm init`, CNI, join tokens that **expire after 24 h**, and a kubeconfig whose server address works from your laptop. Doing it by hand is error-prone. Re-running half-finished scripts usually breaks things.
 
-## Usage
+`k8lens` automates the whole path and is **safe to re-run**: nodes that already joined are detected and skipped, and `kubeadm init` only runs when no cluster exists.
 
-```bash
-# Cluster mono-nœud (taint control-plane retiré automatiquement)
-./k8lens.sh --single --master 192.168.1.50
+## Architecture
 
-# 1 master + 2 workers, version K8s choisie
-./k8lens.sh --master srv-master --worker srv-w1 --worker srv-w2 --k8s-version 1.34
+```mermaid
+flowchart LR
+    subgraph WS["Operator workstation (Windows / Linux / macOS)"]
+        K["k8lens<br/>(Go binary or k8lens.sh)"]
+        FL["Freelens UI"]
+        KC["~/.kube/&lt;name&gt;.kubeconfig"]
+    end
 
-# Cibles Rocky/CentOS avec utilisateur SSH explicite + cron de renouvellement
-./k8lens.sh --master 10.0.0.10 --worker 10.0.0.11 --ssh-user rocky --install-cron
+    K -->|"SSH (key / agent / ~/.ssh/config)<br/>preflight: passwordless check"| M
+    K -->|SSH| W1
+    K -->|SSH| W2
 
-# Sans argument : les cibles sont demandées en console
-./k8lens.sh
+    subgraph Cluster["Target nodes (Ubuntu/Debian or Rocky/CentOS/Alma)"]
+        M["Control plane<br/>containerd · kubeadm init · Calico<br/>cron: k8lens-renew.sh every 12 h"]
+        W1["Worker 1<br/>kubeadm join"]
+        W2["Worker N<br/>kubeadm join"]
+    end
+
+    M -->|"fresh join command<br/>/var/lib/k8lens/join-command"| W1
+    M --> W2
+    M -->|"admin.conf, server rewritten to master IP"| KC
+    KC --> FL
+    FL -->|"6443/tcp"| M
 ```
 
-Le script est **idempotent** : relançable à tout moment, les nœuds déjà membres du
-cluster sont détectés et ignorés. L'OS de chaque cible est **auto-détecté**
-(`/etc/os-release`) — on peut mélanger Ubuntu et Rocky dans le même cluster.
+## Features
+
+- **Single-node or multi-node**: `--single` (control-plane taint removed) or `--master` + repeatable `--worker`
+- **Multi-distro, auto-detected** via `/etc/os-release`. You can mix distros in one cluster:
+  - Ubuntu/Debian: apt, `pkgs.k8s.io` deb keyring, ufw
+  - Rocky/CentOS Stream/AlmaLinux: dnf, EPEL containerd, `pkgs.k8s.io` rpm with `exclude=`, firewalld, SELinux permissive
+- **Idempotent**: existing clusters and joined nodes are detected and skipped
+- **SSH preflight**: stops early with a clear message if any target asks for a password
+- **Join-token renewal cron** (`--install-cron`): regenerates a 24 h worker token and a 2 h control-plane certificate key every 12 h, so a node can join at any time
+- **Freelens-ready kubeconfig** exported locally, with the server rewritten to the master IP
+- **Optional add-ons** (`--with-addons`): Helm, local-path-provisioner, ingress-nginx
+- **Native Go binary**: `golang.org/x/crypto/ssh` client, supports `id_ed25519` / `id_rsa` / `id_ecdsa`, the SSH agent (including the Windows OpenSSH named pipe), `~/.ssh/config` aliases and `known_hosts` *accept-new*
+
+## Quickstart
+
+Prerequisites: key-based SSH from your workstation to every node (`ssh-copy-id user@node`), `sudo` on the nodes (NOPASSWD recommended), Ubuntu 22.04+/Debian 12+ or Rocky/CentOS Stream/AlmaLinux 9+.
+
+```bash
+# Build (or download the artifact from the Actions tab)
+go build -o k8lens .                        # or ./build-local.sh (Docker, linux + windows)
+
+# Single node
+./k8lens --single --master 192.168.1.50
+
+# 1 control plane + 2 workers, pinned Kubernetes version
+./k8lens --master srv-master --worker srv-w1 --worker srv-w2 --k8s-version 1.34
+
+# Rocky/CentOS targets, explicit SSH user, join-token renewal cron
+./k8lens --master 10.0.0.10 --worker 10.0.0.11 --ssh-user rocky --install-cron
+
+# Same options with the Bash version
+./k8lens.sh --master 10.0.0.10 --worker 10.0.0.11
+```
+
+Then in **Freelens**: *Catalog → Clusters → + → Sync kubeconfig file(s)* and pick `~/.kube/k8lens.kubeconfig`.
+
+Add a worker later:
+
+```bash
+ssh master "sudo cat /var/lib/k8lens/join-command" | ssh new-worker "sudo bash"
+```
 
 ### Options
 
-| Option | Défaut | Description |
+| Option | Default | Description |
 |---|---|---|
-| `--master HOTE` | *(demandé)* | Hôte du control-plane |
-| `--worker HOTE` | — | Worker, répétable (`--worker w1 --worker w2 …`) |
-| `--single` | — | Cluster mono-nœud |
-| `--k8s-version X.Y` | `1.34` | Version Kubernetes (dépôts pkgs.k8s.io) |
-| `--calico-version vX.Y.Z` | `v3.27.0` | Version du CNI Calico |
-| `--pod-cidr CIDR` | `192.168.0.0/16` | CIDR des pods |
-| `--ssh-user USER` | — | Utilisateur SSH sur les cibles |
-| `--cluster-name NOM` | `k8lens` | Nom du contexte dans le kubeconfig exporté |
-| `--export-kubeconfig F` | `~/.kube/<nom>.kubeconfig` | Chemin local du kubeconfig |
-| `--install-cron` | — | Pose le cron de renouvellement du token sur le master |
-| `--with-addons` | — | helm + local-path-provisioner + ingress-nginx |
+| `--master HOST` | *(prompted)* | Control-plane host |
+| `--worker HOST` | none | Worker host, repeatable |
+| `--single` | off | Single-node cluster |
+| `--k8s-version X.Y` | `1.34` | Kubernetes minor version (pkgs.k8s.io) |
+| `--calico-version vX.Y.Z` | `v3.27.0` | Calico CNI version |
+| `--pod-cidr CIDR` | `192.168.0.0/16` | Pod CIDR |
+| `--ssh-user USER` | `~/.ssh/config`, then current user | SSH user on targets |
+| `--cluster-name NAME` | `k8lens` | Context name in exported kubeconfig |
+| `--export-kubeconfig F` | `~/.kube/<name>.kubeconfig` | Local kubeconfig path |
+| `--install-cron` | off | Install the token-renewal cron on the master |
+| `--with-addons` | off | Helm + local-path-provisioner + ingress-nginx |
 
-## Ce que fait le script
+## Screenshots
 
-1. Détecte l'OS de chaque cible (`ubuntu` ou famille RedHat)
-2. Ouvre le pare-feu entre les nœuds (ufw ou firewalld) + port 6443 pour Freelens
-3. Prépare chaque nœud : containerd (SystemdCgroup), swap off, modules kernel,
-   sysctl, dépôt Kubernetes officiel versionné, `kubelet kubeadm kubectl` gelés
-   - **Ubuntu** : apt + keyring pkgs.k8s.io deb
-   - **Rocky/CentOS** : `dnf install epel-release` → containerd EPEL, repo
-     pkgs.k8s.io rpm avec `exclude=` + `--disableexcludes=kubernetes`, SELinux permissif
-4. `kubeadm init` (uniquement si aucun cluster n'existe) + Calico
-5. Join des workers avec un token fraîchement généré
-6. Exporte le kubeconfig localement, serveur réécrit sur l'IP du master
+> _Placeholders, to be added (see [docs/screenshots](docs/screenshots/))._
 
-## Pilotage avec Freelens
-
-Le kubeconfig exporté (`~/.kube/<cluster-name>.kubeconfig` par défaut) s'importe
-directement :
-
-1. Ouvrir **Freelens** ([installation](https://github.com/freelensapp/freelens#installation) :
-   `winget install Freelensapp.Freelens` / `brew install --cask freelens` / AppImage-deb-rpm)
-2. **Catalog → Clusters → + → Sync kubeconfig file(s)**
-3. Sélectionner le fichier exporté — le cluster apparaît et se pilote depuis l'UI
-   (nodes, pods, logs, shell, métriques…)
-
-Alternative : fusionner dans le kubeconfig par défaut, Freelens le lit automatiquement :
-
-```bash
-KUBECONFIG=~/.kube/config:~/.kube/k8lens.kubeconfig kubectl config view --flatten > ~/.kube/config.new
-mv ~/.kube/config.new ~/.kube/config
-```
-
-## Cron de renouvellement (expiration du token)
-
-Le token de join kubeadm **expire après 24h**. Avec `--install-cron`, le script pose
-sur le master :
-
-- `/usr/local/bin/k8lens-renew.sh` — régénère un token TTL 24h + la certificate-key
-  control-plane (TTL 2h), et purge les tokens expirés
-- `/etc/cron.d/k8lens` — exécution **toutes les 12h**
-
-La commande de join est donc toujours valide dans :
-
-```
-/var/lib/k8lens/join-command                 # pour un worker
-/var/lib/k8lens/join-command-control-plane   # pour un control-plane supplémentaire
-```
-
-Ajouter un worker plus tard = préparer le nœud (relancer `k8lens.sh` avec le nouveau
-`--worker`), ou manuellement :
-
-```bash
-ssh master "sudo cat /var/lib/k8lens/join-command" | ssh nouveau-worker "sudo bash"
-```
-
-## CI — binaires de livraison
-
-Deux branches de livraison déclenchent un build GitHub Actions :
-
-| Branche | Workflow | Artefact produit |
-|---|---|---|
-| `liv-win` | `build-windows` | `k8lens.exe` (windows/amd64) |
-| `liv-lin` | `build-linux` | `k8lens` (linux/amd64) |
-
-```bash
-git push github main:liv-win   # déclenche le build Windows
-git push github main:liv-lin   # déclenche le build Linux
-```
-
-**Build local d'abord** (Docker, zéro crédit CI consommé) — même compilation que la CI,
-plus un test de fumée du `.exe` si lancé depuis Git Bash :
-
-```bash
-./build-local.sh      # → dist/k8lens + dist/k8lens.exe
-```
-
-L'artefact se télécharge depuis l'onglet **Actions** du repo (ou `gh run download`).
-
-Le binaire est **100 % natif** (Go) : client SSH intégré (`golang.org/x/crypto/ssh`),
-**aucune dépendance à Git Bash, WSL, ssh.exe ou scp**. Il supporte :
-
-- les clés `~/.ssh/id_ed25519`, `id_rsa`, `id_ecdsa` et l'**agent SSH**
-  (OpenSSH Windows via named pipe inclus)
-- les **alias de `~/.ssh/config`** (HostName, User, Port, IdentityFile)
-- `known_hosts` en mode *accept-new* (hôte inconnu ajouté, clé changée = erreur)
-
-Mêmes options que le script bash :
-
-```bash
-k8lens.exe --master 10.0.0.10 --worker 10.0.0.11 --install-cron
-```
-
-## Fichiers
-
-| Fichier | Rôle |
+| CLI run | Freelens cluster view |
 |---|---|
-| `main.go` / `ssh.go` / `steps.go` | CLI native Go : SSH intégré, provisioning complet |
-| `k8lens.sh` | Version script bash (alternative autonome, mêmes options) |
-| `k8lens-renew.sh` | Renouvellement du token — déployé sur le master, lancé par cron |
-| `build-local.sh` | Build Docker local (vet + linux + windows) sans consommer la CI |
-| `.github/workflows/build-{win,lin}.yml` | Pipelines de livraison `liv-win` / `liv-lin` |
+| `docs/screenshots/cli-run.png` | `docs/screenshots/freelens.png` |
+
+## Tech stack
+
+- **Go 1.25**: `golang.org/x/crypto/ssh`, `kevinburke/ssh_config`, `Microsoft/go-winio` (Windows SSH agent)
+- **Bash**: standalone `k8lens.sh` + `k8lens-renew.sh` (cron)
+- **Kubernetes**: kubeadm, containerd, Calico, `pkgs.k8s.io`
+- **Linux**: apt/ufw and dnf/EPEL/firewalld/SELinux
+- **CI/CD**: GitHub Actions with ShellCheck, gofmt, `go vet` (linux + windows), golangci-lint and cross-builds. Delivery branches `liv-win` / `liv-lin` publish binaries as artifacts.
+
+## Repository layout
+
+| File | Role |
+|---|---|
+| `main.go`, `ssh.go`, `steps.go`, `agent_*.go` | Native Go CLI: embedded SSH, full provisioning |
+| `k8lens.sh` | Bash implementation (same options) |
+| `k8lens-renew.sh` | Join-token renewal, deployed on the master and run by cron |
+| `build-local.sh` | Local Docker build (vet + linux + windows) without using CI minutes |
+| `.github/workflows/` | `ci.yml` (lint/build on every push) + `build-win.yml` / `build-lin.yml` delivery pipelines |
+
+## Roadmap
+
+- [ ] Unit tests for argument parsing and OS detection; integration test on Vagrant/Multipass VMs in CI
+- [ ] HA control plane (stacked etcd, 3 masters behind kube-vip)
+- [ ] Choice of CNI (Cilium) and container runtime (CRI-O)
+- [ ] `k8lens upgrade` (kubeadm minor version upgrades) and `k8lens reset`
+- [ ] Tagged GitHub Releases with checksums and SBOM (GoReleaser)
+
+---
+
+## Résumé en français
+
+**k8lens** crée un cluster Kubernetes **kubeadm** (mono-nœud ou 1 master + N workers) par SSH sur Ubuntu/Debian et Rocky/CentOS/AlmaLinux, puis exporte un kubeconfig prêt pour **Freelens**. Le script est **idempotent** : on peut le relancer, et les nœuds déjà membres sont ignorés. Il vérifie l'accès SSH sans mot de passe avant de commencer et peut installer un **cron de renouvellement du token de join**, qui expire sinon au bout de 24 h. Il existe en script Bash et en **binaire Go natif** (Windows/Linux) avec client SSH intégré, sans dépendance à WSL ou Git Bash. Documentation détaillée : [docs/README.fr.md](docs/README.fr.md).
+
+## License
+
+[MIT](LICENSE) © Ghislain Adon
