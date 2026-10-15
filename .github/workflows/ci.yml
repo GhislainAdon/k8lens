@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          severity: warning
+
+  go:
+    name: Go vet / lint / build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+      - name: go vet (linux + windows)
+        run: |
+          go vet ./...
+          GOOS=windows go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5
+
+      - name: Build linux/amd64 + windows/amd64
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/k8lens .
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/k8lens.exe .
+
+      - name: Smoke test
+        run: ./dist/k8lens --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: k8lens-binaries
+          path: dist/
+          retention-days: 7
